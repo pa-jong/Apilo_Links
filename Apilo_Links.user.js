@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Apilo Links
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.7.1
 // @description  Zamienia numery zamówień na linki na podstawie kanału sprzedaży w widoku ogólnym i szczegółowym (bez EAN w ogólnym) z obsługą dynamicznego ładowania tabeli (setInterval)
 // @author       Pa-Jong
 // @match        https://elektrone.apilo.com/order/order/detail/*
@@ -15,95 +15,106 @@
 (function () {
     'use strict';
 
+    /* ================= CONFIG ================= */
+    const CONFIG = {
+        SUPPORTED_CHANNELS: [
+            "elektrone.pl",
+            "elektronikadomowa.pl"
+        ]
+    };
+
     const isDetailView = location.pathname.includes("/order/order/detail/");
     const isOverviewView = location.pathname.startsWith("/order/order/") && !isDetailView;
 
-    console.log("[Apilo Links] Widok szczegółowy:", isDetailView);
-    console.log("[Apilo Links] Widok ogólny:", isOverviewView);
+    console.log("[Apilo Links] Start | detail:", isDetailView, "| overview:", isOverviewView);
 
+    /* ================= DETAIL VIEW ================= */
     if (isDetailView) {
-        console.log("[Apilo Links] Wszedłem do widoku szczegółowego");
+        console.log("[Apilo Links] Detail view");
 
-        let channelElement = [...document.querySelectorAll('.kt-portlet__body .row.static-info')].find(row => row.textContent.includes("Kanał sprzedaży:"));
-        let shopUrl = channelElement ? channelElement.querySelector('.col-md-7.value')?.textContent.trim() : null;
+        const channelRow = [...document.querySelectorAll('.kt-portlet__body .row.static-info')]
+            .find(r => r.textContent.includes("Kanał sprzedaży:"));
 
-        if (!shopUrl) {
-            console.warn('Nie znaleziono kanału sprzedaży!');
-            return;
-        }
+        const rawChannel = channelRow?.querySelector('.col-md-7.value')?.textContent?.trim();
 
-        const isSupportedChannel = shopUrl === "elektrone.pl" || shopUrl === "elektronikadomowa.pl";
+        const matchedDomain = CONFIG.SUPPORTED_CHANNELS.find(d =>
+            rawChannel && rawChannel.includes(d)
+        );
 
-        if (!shopUrl.startsWith("http://") && !shopUrl.startsWith("https://")) {
-            shopUrl = "https://" + shopUrl;
-        }
+        const isSupportedChannel = Boolean(matchedDomain);
 
-        let externalNumberRow = [...document.querySelectorAll('.kt-portlet__body .row.static-info')].find(row => row.textContent.includes("Numer zewnętrzny:"));
-        let externalNumberElement = externalNumberRow?.querySelector('.col-md-7.value');
+        if (isSupportedChannel) {
+            const shopUrl = `https://${matchedDomain}`;
 
-        if (isSupportedChannel && externalNumberElement) {
-            let externalNumber = externalNumberElement.textContent.trim();
-            let orderLink = `${shopUrl}/zarzadzanie/sprzedaz/zamowienia_szczegoly.php?id_poz=${externalNumber}`;
-            externalNumberElement.innerHTML = `<a href="${orderLink}" target="_blank" title="Otwórz zamówienie w sklepie">${externalNumber}</a>`;
-        }
+            // Numer zewnętrzny
+            const extRow = [...document.querySelectorAll('.kt-portlet__body .row.static-info')]
+                .find(r => r.textContent.includes("Numer zewnętrzny:"));
 
-        let rows = document.querySelectorAll('.table.table-hover.table-striped tbody tr');
+            const extVal = extRow?.querySelector('.col-md-7.value');
 
-        rows.forEach(row => {
-            let skuCell = row.querySelector('td:nth-child(4)');
-
-            if (skuCell) {
-                let cellText = skuCell.textContent.trim();
-                let parts = cellText.split('/');
-                let ean = parts.length > 1 ? parts[parts.length - 1].trim() : null;
-
-                if (ean && ean !== "-") {
-                    let productUrl = `${shopUrl}/szukaj.html/szukaj=${ean}`;
-                    skuCell.innerHTML = cellText.replace(ean, `<a href="${productUrl}" target="_blank" title="Otwórz produkt w sklepie">${ean}</a>`);
-                }
+            if (extVal) {
+                const num = extVal.textContent.trim();
+                extVal.innerHTML =
+                    `<a href="${shopUrl}/zarzadzanie/sprzedaz/zamowienia_szczegoly.php?id_poz=${num}" target="_blank">${num}</a>`;
             }
-        });
-    }
 
-    if (isOverviewView) {
-        console.log("[Apilo Links] Wszedłem do widoku ogólnego");
+            // Produkty (EAN)
+            document.querySelectorAll('.table tbody tr').forEach(row => {
+                const skuCell = row.querySelector('td:nth-child(4)');
+                if (!skuCell) return;
 
-        const interval = setInterval(() => {
-            let rows = document.querySelectorAll('table tbody tr');
-            if (rows.length === 0) return;
+                const txt = skuCell.textContent.trim();
+                const parts = txt.split('/');
+                const ean = parts.length > 1 ? parts[parts.length - 1].trim() : null;
 
-            clearInterval(interval);
-            console.log(`[Apilo Links] Znaleziono ${rows.length} wierszy w tabeli`);
+                if (!ean || ean === "-") return;
 
-            rows.forEach((row, index) => {
-                let orderCell = row.querySelector('td:nth-child(2)');
-
-                if (orderCell) {
-                    let fullHTML = orderCell.innerHTML;
-                    console.log(`[#${index}] orderCell.innerHTML:`, fullHTML);
-
-                    let shopUrlMatch = fullHTML.match(/(elektronikadomowa\.pl|elektrone\.pl)/i);
-                    if (!shopUrlMatch) {
-                        console.log(`[#${index}] Pominięto – brak kanału sprzedaży w HTML.`);
-                        return;
-                    }
-
-                    let shopUrl = `https://${shopUrlMatch[1]}`;
-                    console.log(`[#${index}] Rozpoznany kanał sprzedaży: ${shopUrl}`);
-
-                    let spans = orderCell.querySelectorAll('span.text-elipsis');
-
-                    spans.forEach(span => {
-                        let num = span.textContent.trim();
-                        console.log(`[#${index}] Sprawdzam span: "${num}"`);
-                        if (/^\d{4,}$/.test(num)) {
-                            let orderLink = `${shopUrl}/zarzadzanie/sprzedaz/zamowienia_szczegoly.php?id_poz=${num}`;
-                            console.log(`[#${index}] Podmieniam numer zamówienia ${num} → ${orderLink}`);
-                            span.innerHTML = `<a href="${orderLink}" target="_blank" title="Otwórz zamówienie w sklepie">${num}</a>`;
-                        }
-                    });
-                }
+                skuCell.innerHTML = txt.replace(
+                    ean,
+                    `<a href="${shopUrl}/szukaj.html/szukaj=${ean}" target="_blank">${ean}</a>`
+                );
             });
-        }, 300);
+
+        } else {
+            console.log("[Apilo Links] Detail – kanał pominięty:", rawChannel);
+        }
     }
+
+    /* ================= OVERVIEW VIEW ================= */
+    if (isOverviewView) {
+        console.log("[Apilo Links] Overview view");
+
+        const processRows = () => {
+            document.querySelectorAll('table tbody tr').forEach(row => {
+                if (row.dataset.apiloProcessed) return;
+
+                const cell = row.querySelector('td:nth-child(2)');
+                const span = cell?.querySelector('div.text-break > span');
+                if (!cell || !span) return;
+
+                const domain = CONFIG.SUPPORTED_CHANNELS.find(d =>
+                    cell.innerText.includes(d)
+                );
+
+                if (!domain) return;
+
+                const num = span.textContent.trim();
+                if (!/^\d{4,}$/.test(num)) return;
+
+                span.innerHTML =
+                    `<a href="https://${domain}/zarzadzanie/sprzedaz/zamowienia_szczegoly.php?id_poz=${num}" target="_blank">${num}</a>`;
+
+                row.dataset.apiloProcessed = "1";
+            });
+        };
+
+        const table = document.querySelector('table');
+        if (table) {
+            new MutationObserver(() => requestAnimationFrame(processRows))
+                .observe(table, { childList: true, subtree: true });
+        }
+
+        setTimeout(processRows, 500);
+    }
+
 })();
